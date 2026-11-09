@@ -34,6 +34,22 @@ describe("POST /sync", () => {
     expect(rows[0].status).toBe("refunded");
   });
 
+  it("дозаполняет оплаченную сумму у строк, сохранённых до появления скидок", async () => {
+    const o = apiOrder({ amount: 1000, discountPercent: 10, amountPaid: 900 });
+    await ctx.db.query(
+      `INSERT INTO orders (id, customer_id, amount_kop, amount_paid_kop, status, created_at, updated_at)
+       VALUES ($1, $2, 100000, NULL, 'paid', $3, $4)`,
+      [o.id, o.customerId, o.createdAt, o.updatedAt],
+    );
+    ctx.api.pages.set(null, { items: [o], nextCursor: null });
+
+    expect((await ctx.app.inject({ method: "POST", url: "/sync" })).json()).toMatchObject({ applied: 1, stale: 0 });
+    const { rows } = await ctx.db.query(`SELECT amount_paid_kop FROM orders WHERE id = $1`, [o.id]);
+    expect(Number(rows[0].amount_paid_kop)).toBe(90000);
+
+    expect((await ctx.app.inject({ method: "POST", url: "/sync" })).json()).toMatchObject({ applied: 0, stale: 1 });
+  });
+
   it("строковые суммы и даты без зоны", async () => {
     const o = apiOrder({ amount: "2500.00", createdAt: "2026-02-10T21:30:00" });
     ctx.api.pages.set(null, { items: [o], nextCursor: null });

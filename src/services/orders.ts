@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ValidationError } from "../errors.js";
-import type { Order, OrdersRepository } from "../repositories/orders.js";
+import type { Order, OrdersRepository, SaveResult } from "../repositories/orders.js";
 import { parseRub, toKop } from "../utils/money.js";
 import { parseUtc } from "../utils/time.js";
 
@@ -9,12 +9,13 @@ const ExternalOrder = z.object({
   id: z.string().min(1),
   customerId: z.string().min(1),
   amount: z.union([z.number(), z.string()]),
+  amountPaid: z.union([z.number(), z.string()]).optional(),
   status: z.enum(["pending", "paid", "refunded"]),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 
-export type ApplyResult = "created" | "updated" | "stale";
+export type ApplyResult = SaveResult;
 
 export class OrdersService {
   constructor(private readonly orders: OrdersRepository) {}
@@ -24,10 +25,12 @@ export class OrdersService {
     if (!parsed.success) throw new ValidationError(`invalid order: ${parsed.error.issues.map((i) => i.path.join(".")).join(", ")}`);
     const o = parsed.data;
     try {
+      const amountKop = toKop(parseRub(o.amount));
       return {
         id: o.id,
         customerId: o.customerId,
-        amountKop: toKop(parseRub(o.amount)),
+        amountKop,
+        amountPaidKop: o.amountPaid === undefined ? amountKop : toKop(parseRub(o.amountPaid)),
         status: o.status,
         createdAt: parseUtc(o.createdAt),
         updatedAt: parseUtc(o.updatedAt),
@@ -43,10 +46,6 @@ export class OrdersService {
    * только если она новее уже сохранённой (по updatedAt).
    */
   async apply(raw: unknown): Promise<ApplyResult> {
-    const incoming = this.normalize(raw);
-    const current = await this.orders.get(incoming.id);
-    if (current && current.updatedAt.getTime() >= incoming.updatedAt.getTime()) return "stale";
-    await this.orders.save(incoming);
-    return current ? "updated" : "created";
+    return this.orders.save(this.normalize(raw));
   }
 }
